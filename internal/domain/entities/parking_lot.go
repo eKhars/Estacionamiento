@@ -9,23 +9,46 @@ import (
     "Estacionamiento/internal/domain/models"
 )
 
+type Direction int
+
+const (
+    None Direction = iota
+    Entering
+    Exiting
+)
+
 type ParkingLot struct {
     observers      []interfaces.Observer
     spaces         [20]bool
-    mutex          sync.Mutex
-    gate           sync.Mutex
     wg             sync.WaitGroup
     stats          models.ParkingStats
     rng            *rand.Rand
-    gateDirection  sync.Mutex
-    isExiting      bool
-    isEntering     bool
+
+    ParkingSem     models.Semaphore    
+    GateSem        models.Semaphore   
+
+    DirectionChan  chan Direction      
+    SpacesChan     chan int           
+    StatsChan      chan models.ParkingStats  
 }
 
 func NewParkingLot() *ParkingLot {
-    return &ParkingLot{
-        rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+    p := &ParkingLot{
+        rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
+        ParkingSem:    models.NewSemaphore(20),
+        GateSem:       models.NewSemaphore(1),
+        DirectionChan: make(chan Direction, 1),
+        SpacesChan:    make(chan int, 20),
+        StatsChan:     make(chan models.ParkingStats, 1),
     }
+
+    for i := 0; i < 20; i++ {
+        p.SpacesChan <- i
+    }
+
+    p.DirectionChan <- None
+
+    return p
 }
 
 func (p *ParkingLot) RegisterObserver(o interfaces.Observer) {
@@ -59,13 +82,35 @@ func (p *ParkingLot) NotifyStatsObservers(stats models.ParkingStats) {
     }
 }
 
-func (p *ParkingLot) FindEmptySpot() (int, bool) {
-    for i, occupied := range p.spaces {
-        if !occupied {
-            return i, true
-        }
+func (p *ParkingLot) GetSpace() (int, bool) {
+    select {
+    case spot := <-p.SpacesChan:
+        p.spaces[spot] = true
+        return spot, true
+    default:
+        return -1, false
     }
-    return -1, false
+}
+
+func (p *ParkingLot) ReleaseSpace(spot int) {
+    p.spaces[spot] = false
+    p.SpacesChan <- spot
+}
+
+func (p *ParkingLot) GetDirection() Direction {
+    return <-p.DirectionChan
+}
+
+func (p *ParkingLot) SetDirection(d Direction) {
+    select {
+    case <-p.DirectionChan: 
+    default:
+    }
+    p.DirectionChan <- d
+}
+
+func (p *ParkingLot) UpdateStats(update func(*models.ParkingStats)) {
+    update(&p.stats)
 }
 
 func (p *ParkingLot) GeneratePoissonDelay() time.Duration {
@@ -76,40 +121,12 @@ func (p *ParkingLot) GetWaitGroup() *sync.WaitGroup {
     return &p.wg
 }
 
-func (p *ParkingLot) GetMutex() *sync.Mutex {
-    return &p.mutex
-}
-
-func (p *ParkingLot) GetGateMutex() *sync.Mutex {
-    return &p.gate
-}
-
-func (p *ParkingLot) GetGateDirectionMutex() *sync.Mutex {
-    return &p.gateDirection
-}
-
 func (p *ParkingLot) GetStats() *models.ParkingStats {
     return &p.stats
 }
 
 func (p *ParkingLot) GetSpaces() *[20]bool {
     return &p.spaces
-}
-
-func (p *ParkingLot) SetIsExiting(value bool) {
-    p.isExiting = value
-}
-
-func (p *ParkingLot) SetIsEntering(value bool) {
-    p.isEntering = value
-}
-
-func (p *ParkingLot) IsExiting() bool {
-    return p.isExiting
-}
-
-func (p *ParkingLot) IsEntering() bool {
-    return p.isEntering
 }
 
 func (p *ParkingLot) GetRng() *rand.Rand {
